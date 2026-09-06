@@ -2,13 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..db import get_db, User, Membership, AuditLog, gen_id
-from ..auth import get_current_user
+from ..auth import get_current_user, get_repository_membership, github_oauth_configured
 from ..config import settings
+from .. import databricks_adapter, entire_adapter
 from .repos import _authorized_repo
 
 router = APIRouter(prefix="/api/repos", tags=["settings"])
 
-VALID_ROLES = {"owner", "member", "reviewer"}
+VALID_ROLES = {"viewer", "developer", "admin"}
 
 
 @router.get("/{repo_id}/settings")
@@ -24,10 +25,10 @@ def get_settings(repo_id: str, user: User = Depends(get_current_user), db: Sessi
         "repository": {"id": repo.id, "full_name": repo.full_name},
         "members": member_rows,
         "integrations": {
-            "github_oauth_configured": bool(settings.GITHUB_CLIENT_ID),
-            "entire_cli_mode": "real" if settings.USE_REAL_ENTIRE_CLI else "mock",
-            "databricks_mode": "real" if settings.USE_REAL_DATABRICKS else "mock (seeded demo history)",
-            "ai_explanation_mode": "claude-sonnet-4-6" if settings.USE_REAL_LLM else "template-engine (mock)",
+            "github_oauth_configured": github_oauth_configured(),
+            "entire_graph": entire_adapter.graph_status()["source"],
+            "databricks": databricks_adapter.evidence_metadata()["source"],
+            "ai_explanation_mode": "claude-sonnet-4-6" if settings.USE_REAL_LLM else "local deterministic fallback",
         },
         "rate_limit_per_minute": settings.RATE_LIMIT_PER_MINUTE,
     }
@@ -41,11 +42,9 @@ def update_role(
     if role not in VALID_ROLES:
         raise HTTPException(status_code=422, detail=f"role must be one of {VALID_ROLES}")
 
-    requester_membership = db.query(Membership).filter(
-        Membership.user_id == user.id, Membership.repository_id == repo_id
-    ).first()
-    if not requester_membership or requester_membership.role != "owner":
-        raise HTTPException(status_code=403, detail="Only an owner can change member roles")
+    requester_membership = get_repository_membership(repo_id, user, db)
+    if requester_membership.role != "admin":
+        raise HTTPException(status_code=403, detail="Only an admin can change member roles")
 
     target = db.query(Membership).filter(
         Membership.user_id == target_user_id, Membership.repository_id == repo_id
@@ -62,11 +61,9 @@ def update_role(
 
 @router.get("/{repo_id}/audit-log")
 def audit_log(repo_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    requester_membership = db.query(Membership).filter(
-        Membership.user_id == user.id, Membership.repository_id == repo_id
-    ).first()
-    if not requester_membership or requester_membership.role != "owner":
-        raise HTTPException(status_code=403, detail="Only an owner can view the audit log")
+    requester_membership = get_repository_membership(repo_id, user, db)
+    if requester_membership.role != "admin":
+        raise HTTPException(status_code=403, detail="Only an admin can view the audit log")
 
     rows = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(100).all()
     return [

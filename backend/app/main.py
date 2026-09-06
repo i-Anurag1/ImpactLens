@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from .config import settings
 from .db import init_db
 from .routers import auth, repos, analyze, checkpoints, settings_router
+from . import entire_adapter, databricks_adapter
 
 app = FastAPI(title=settings.APP_NAME, version="0.1.0")
 
@@ -37,8 +38,8 @@ def health():
         "status": "ok",
         "app": settings.APP_NAME,
         "demo_mode": settings.DEMO_MODE,
-        "entire_cli_mode": "real" if settings.USE_REAL_ENTIRE_CLI else "mock",
-        "databricks_mode": "real" if settings.USE_REAL_DATABRICKS else "mock",
+        "entire_graph": entire_adapter.graph_status(),
+        "databricks": databricks_adapter.evidence_metadata(),
     }
 
 

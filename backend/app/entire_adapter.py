@@ -1,43 +1,29 @@
+"""The boundary between ImpactLens and Entire Graph.
+
+Entire is evidence, not an oracle.  When the local CLI is unavailable the
+bundled demo relationship fixture remains usable, but it is explicitly marked
+PARTIAL and is never represented as a live Entire result.
 """
-Adapter over Entire Graph / Entire CLI.
-
-This is the ONLY file that should know whether Entire is real or mocked.
-Every other module calls the functions below and gets back normalized
-`GraphQueryResult` / `Checkpoint` objects — it never knows the difference.
-
-REAL MODE (USE_REAL_ENTIRE_CLI=true): each method shells out to the
-`entire` binary and parses its JSON output, mirroring the documented
-commands:
-    entire graph search   --query <q> --repo <path> --format json
-    entire graph def      --symbol <s> --repo <path> --format json
-    entire graph neighbors --symbol <s> --repo <path> --format json
-    entire graph impact   --symbol <s> --repo <path> --format json
-    entire graph diff     --base <sha> --head <sha> --repo <path> --format json
-    entire graph snapshot --repo <path> --format json
-    entire session list / entire checkpoint list --repo <path> --format json
-    entire explain / entire blame / entire why --repo <path> --format json
-See https://github.com/entireio/entire-graph, https://github.com/entireio/cli,
-and https://docs.entire.io/quickstart for the authoritative command set.
-
-MOCK MODE (default here): returns data derived from demo_data.py, but
-through the exact same normalized shape a real CLI response would take,
-including confidence scores and explicit limitations — Entire Graph is
-heuristic and must never be presented as compiler-verified truth.
-"""
-import json
-import subprocess
 from collections import defaultdict
+import json
+import shutil
+import subprocess
 from typing import List, Optional
 
-from .config import settings
 from . import demo_data as D
-from .schemas import GraphQueryResult, GraphEdge, SymbolRef, Checkpoint
+from .config import settings
+from .schemas import Checkpoint, EvidenceStatus, GraphEdge, GraphQueryResult, SymbolRef
 
 LIMITATIONS_STATIC = [
-    "Call-graph edges are inferred via static analysis and naming/heuristic "
-    "matching; dynamic dispatch, reflection, and string-built call sites can "
-    "be missed.",
-    "Confidence reflects graph heuristic certainty, not a compiler guarantee.",
+    "Bundled demo relationship fixture is active because no live Entire Graph result was returned.",
+    "Static relationships can miss dynamic dispatch, reflection, generated code, and string-built call sites.",
+    "The unresolved dynamic-pricing fixture below must be checked in source and at runtime.",
+]
+
+VERIFICATION_STEPS = [
+    "Inspect the changed source and the shown file:line callers/callees.",
+    "Run the ranked tests, including the indirect inventory test.",
+    "Exercise currency rounding and the dynamic pricing path in a runtime environment.",
 ]
 
 
@@ -46,54 +32,94 @@ def _symbol_ref(name: str) -> SymbolRef:
     return SymbolRef(symbol=name, file=meta["file"], line=meta["line"], kind=meta["kind"])
 
 
+def is_real_cli_available() -> bool:
+    return bool(settings.USE_REAL_ENTIRE_CLI and shutil.which(settings.ENTIRE_CLI_PATH))
+
+
+def graph_status() -> dict:
+    if is_real_cli_available():
+        return {"mode": "live", "available": True, "source": "Entire Graph CLI"}
+    if settings.USE_REAL_ENTIRE_CLI:
+        return {"mode": "unavailable", "available": False, "source": "Entire Graph CLI not found"}
+    return {"mode": "demo_fixture", "available": False, "source": "Bundled demo graph fixture"}
+
+
+def checkpoint_status() -> dict:
+    if is_real_cli_available():
+        return {"available": True, "note": "Live Entire checkpoint retrieval is enabled."}
+    return {
+        "available": False,
+        "note": "No valid Entire checkpoint can be shown because the Entire CLI is unavailable in this environment.",
+    }
+
+
 def _run_real_cli(args: List[str]) -> dict:
-    """Real-mode helper: invoke the entire CLI and parse JSON. Not used
-    while USE_REAL_ENTIRE_CLI is False, but left in place so flipping the
-    flag is the only change needed once the binary + repo checkout exist."""
     cmd = [settings.ENTIRE_CLI_PATH, *args, "--format", "json"]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if proc.returncode != 0:
-        raise RuntimeError(f"entire CLI failed: {proc.stderr.strip()}")
+        raise RuntimeError(proc.stderr.strip() or "Entire CLI returned a non-zero status")
     return json.loads(proc.stdout)
 
 
+def _from_real(data: dict, query_type: str, query: str) -> GraphQueryResult:
+    # Entire's JSON response must already carry the returned nodes/edges.  We
+    # add only safety metadata; we do not invent missing relationships.
+    result = GraphQueryResult(**data)
+    result.query_type = result.query_type or query_type
+    result.query = result.query or query
+    if not result.is_complete or result.confidence < 0.85 or result.limitations:
+        result.evidence_status = EvidenceStatus.PARTIAL
+        result.verification_steps = result.verification_steps or VERIFICATION_STEPS
+    else:
+        result.evidence_status = EvidenceStatus.CONFIRMED
+    result.source = result.source or "Entire Graph CLI"
+    return result
+
+
+def _unavailable(query_type: str, query: str, reason: str) -> GraphQueryResult:
+    return GraphQueryResult(
+        query_type=query_type, query=query, nodes=[], edges=[], confidence=0.0,
+        heuristic=False, source="Entire Graph unavailable", limitations=[reason],
+        evidence_status=EvidenceStatus.VERIFY_REQUIRED, is_complete=False,
+        verification_steps=VERIFICATION_STEPS,
+    )
+
+
 def _adjacency():
-    """Undirected adjacency over the directed call-edge fixture, so BFS can
-    walk both 'who calls this' and 'what this reaches', including through a
-    shared node (that's how the hidden InventoryService coupling surfaces —
-    it shares PricingUtils.applyRounding with the changed PaymentService
-    code, with no direct edge between the two services)."""
     adj = defaultdict(list)
     for edge in D.CALL_EDGES:
-        src = edge[0]
-        tgt = edge[1]
-        adj[src].append(edge)
-        adj[tgt].append(edge)
+        adj[edge[0]].append(edge)
+        adj[edge[1]].append(edge)
     return adj
 
 
-def impact(symbol: str, repo_path: Optional[str] = None, max_hops: int = 2) -> GraphQueryResult:
-    """Blast radius for a changed symbol: direct + hidden (multi-hop) callers."""
-    if settings.USE_REAL_ENTIRE_CLI:
-        data = _run_real_cli(["graph", "impact", "--symbol", symbol, "--repo", repo_path or "."])
-        return GraphQueryResult(**data)
+def impact(
+    symbol: str, repo_path: Optional[str] = None, max_hops: int = 2,
+    use_demo_fixture: bool = False,
+) -> GraphQueryResult:
+    if settings.USE_REAL_ENTIRE_CLI and not use_demo_fixture:
+        if not is_real_cli_available():
+            return _unavailable("impact", symbol, "Entire CLI executable was not found on PATH.")
+        try:
+            return _from_real(
+                _run_real_cli(["graph", "impact", "--symbol", symbol, "--repo", repo_path or "."]),
+                "impact", symbol,
+            )
+        except Exception as exc:
+            return _unavailable("impact", symbol, f"Entire Graph impact query failed: {type(exc).__name__}.")
 
     adj = _adjacency()
-    nodes = {symbol}
-    seen_edge_keys = set()
-    edges: List[GraphEdge] = []
-    frontier = {symbol}
-
+    nodes, seen_edges, edges, frontier = {symbol}, set(), [], {symbol}
     for _ in range(max_hops):
         next_frontier = set()
         for node in frontier:
-            for src, tgt, relation, conf, note in adj.get(node, []):
+            for src, tgt, relation, confidence, note in adj.get(node, []):
                 key = (src, tgt, relation)
-                if key not in seen_edge_keys:
-                    seen_edge_keys.add(key)
+                if key not in seen_edges:
+                    seen_edges.add(key)
                     edges.append(GraphEdge(
-                        source=_symbol_ref(src), target=_symbol_ref(tgt),
-                        relation=relation, confidence=conf, evidence_note=note,
+                        source=_symbol_ref(src), target=_symbol_ref(tgt), relation=relation,
+                        confidence=confidence, evidence_note=note,
                     ))
                 other = tgt if src == node else src
                 if other not in nodes:
@@ -102,69 +128,60 @@ def impact(symbol: str, repo_path: Optional[str] = None, max_hops: int = 2) -> G
         frontier = next_frontier
         if not frontier:
             break
-
-    overall_conf = round(sum(e.confidence for e in edges) / len(edges), 2) if edges else 0.5
+    confidence = round(sum(edge.confidence for edge in edges) / len(edges), 2) if edges else 0.0
     return GraphQueryResult(
-        query_type="impact",
-        query=symbol,
-        nodes=[_symbol_ref(n) for n in nodes],
-        edges=edges,
-        confidence=overall_conf,
-        heuristic=True,
-        source="entire-graph (mock adapter)" if not settings.USE_REAL_ENTIRE_CLI else "entire-graph",
-        limitations=LIMITATIONS_STATIC,
+        query_type="impact", query=symbol, nodes=[_symbol_ref(node) for node in nodes], edges=edges,
+        confidence=confidence, heuristic=True, source="Bundled demo graph fixture (not live Entire CLI)",
+        limitations=LIMITATIONS_STATIC, evidence_status=EvidenceStatus.PARTIAL,
+        is_complete=False, verification_steps=VERIFICATION_STEPS,
     )
 
 
 def neighbors(symbol: str) -> GraphQueryResult:
-    """Direct callers/callees only (1 hop), vs. impact's full blast radius."""
-    result = impact(symbol)
-    direct = [e for e in result.edges if e.confidence >= 0.85]
-    result.edges = direct
+    result = impact(symbol, max_hops=1)
     result.query_type = "neighbors"
     return result
 
 
-def diff(base_sha: str, head_sha: str) -> GraphQueryResult:
-    """Semantic diff between two commits: which symbols actually changed."""
-    changed = [s for cf in D.CHANGED_FILES for s in cf["changed_symbols"]]
+def diff(base_sha: str, head_sha: str, use_demo_fixture: bool = False) -> GraphQueryResult:
+    query = f"{base_sha}..{head_sha}"
+    if settings.USE_REAL_ENTIRE_CLI and not use_demo_fixture:
+        if not is_real_cli_available():
+            return _unavailable("diff", query, "Entire CLI executable was not found on PATH.")
+        try:
+            return _from_real(_run_real_cli(["graph", "diff", "--base", base_sha, "--head", head_sha, "--repo", "."]), "diff", query)
+        except Exception as exc:
+            return _unavailable("diff", query, f"Entire Graph diff query failed: {type(exc).__name__}.")
+    changed = [symbol for file_change in D.CHANGED_FILES for symbol in file_change["changed_symbols"]]
     return GraphQueryResult(
-        query_type="diff",
-        query=f"{base_sha}..{head_sha}",
-        nodes=[_symbol_ref(s) for s in changed],
-        edges=[],
-        confidence=0.93,
-        heuristic=True,
-        source="entire-graph (mock adapter)",
-        limitations=["Diff is symbol-level, not line-level AST diffing in this demo."],
+        query_type="diff", query=query, nodes=[_symbol_ref(symbol) for symbol in changed], edges=[],
+        confidence=0.0, heuristic=True, source="Bundled demo diff fixture (not live Entire CLI)",
+        limitations=["Changed-symbol data is bundled demo input, not an Entire semantic diff result."],
+        evidence_status=EvidenceStatus.PARTIAL, is_complete=False, verification_steps=VERIFICATION_STEPS,
     )
 
 
 def co_change(file_path: str) -> List[dict]:
-    """Historical co-change evidence (files that tend to change together)."""
-    out = []
-    for a, b, freq, note in D.CO_CHANGE_EDGES:
-        if a == file_path or b == file_path:
-            other = b if a == file_path else a
-            out.append({"file": other, "frequency": freq, "note": note})
-    return out
+    return [
+        {"file": b if a == file_path else a, "frequency": frequency, "note": note}
+        for a, b, frequency, note in D.CO_CHANGE_EDGES if a == file_path or b == file_path
+    ]
 
 
 def snapshot(repo_full_name: str) -> dict:
-    """Whole-repo graph snapshot summary, used for the Repository Overview tab."""
+    status = graph_status()
     return {
-        "repository": repo_full_name,
-        "symbol_count": len(D.SYMBOLS),
-        "edge_count": len(D.CALL_EDGES),
-        "last_indexed_at": "2026-09-04T08:00:00Z",
-        "source": "entire-graph (mock adapter)",
+        "repository": repo_full_name, "symbol_count": len(D.SYMBOLS), "edge_count": len(D.CALL_EDGES),
+        "last_indexed_at": "Not live-indexed", "source": status["source"],
+        "evidence_status": "PARTIAL" if not status["available"] else "CONFIRMED",
     }
 
 
 def checkpoints_for_commit(commit_sha: str) -> List[Checkpoint]:
-    """Entire CLI checkpoint/session context: what changed, why, and by whom."""
-    return [Checkpoint(**c) for c in D.CHECKPOINTS if c["commit_sha"] == commit_sha or commit_sha == ""]
+    # Do not surface fabricated IDs.  A compatible real parser can be added
+    # after the installed CLI's checkpoint JSON contract is verified.
+    return []
 
 
 def all_checkpoints() -> List[Checkpoint]:
-    return [Checkpoint(**c) for c in D.CHECKPOINTS]
+    return []

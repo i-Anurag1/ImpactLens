@@ -148,7 +148,7 @@ export default function DependencyGraph({
           <p className="text-mist-500 text-xs">Click a node to inspect its evidence.</p>
         )}
         <div className="mt-4 pt-4 border-t border-ink-600 text-[11px] text-mist-500">
-          Source: {impact.source} · Entire Graph is heuristic — confidence {Math.round(impact.confidence * 100)}%.
+          Evidence status: <span className="text-mist-300">{impact.evidence_status}</span> · source: {impact.source} · confidence {Math.round(impact.confidence * 100)}%.
           {impact.limitations.map((l, i) => (
             <p key={i} className="mt-1">{l}</p>
           ))}

@@ -13,19 +13,18 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app import entire_adapter, risk_engine, ranker, ai_explain, demo_data as D
-from app.schemas import ChangedFile
+from app.schemas import ChangedFile, EvidenceStatus, GraphQueryResult
 
 
 def _impact_for_demo_change():
     changed_symbols = [s for cf in D.CHANGED_FILES for s in cf["changed_symbols"]]
     nodes, edges, confs = {}, [], []
     for sym in changed_symbols:
-        r = entire_adapter.impact(sym)
+        r = entire_adapter.impact(sym, use_demo_fixture=True)
         for n in r.nodes:
             nodes[n.symbol] = n
         edges.extend(r.edges)
         confs.append(r.confidence)
-    from app.schemas import GraphQueryResult
     return GraphQueryResult(
         query_type="impact", query=",".join(changed_symbols),
         nodes=list(nodes.values()), edges=edges,
@@ -79,4 +78,30 @@ def test_ai_explanation_only_references_given_symbols():
     known_symbols = {n.symbol for n in impact.nodes} | set(changed_symbols)
     for test_name, justification in explanation.test_justifications.items():
         assert test_name in {t.test_name for t in tests}
-    assert explanation.generated_by.startswith("template-engine")
+    assert explanation.generated_by == "local deterministic explanation fallback"
+
+
+def test_incomplete_dynamic_relationship_requires_verification_without_an_edge():
+    """Curveball regression: an unresolved runtime dispatch must not become a
+    confident caller/callee or an unquestioned test recommendation."""
+    fixture = D.INCOMPLETE_ANALYSIS_FIXTURE
+    impact = GraphQueryResult(
+        query_type="impact",
+        query=fixture["changed_symbol"],
+        nodes=[],
+        edges=[],
+        confidence=0.0,
+        heuristic=False,
+        source="Entire Graph unavailable",
+        limitations=[fixture["reason"]],
+        evidence_status=EvidenceStatus.VERIFY_REQUIRED,
+        is_complete=False,
+        verification_steps=[fixture["verification"]],
+    )
+    risk = risk_engine.compute_risk([ChangedFile(**D.CHANGED_FILES[0])], impact)
+    recommendations = ranker.recommend_tests(impact)
+
+    assert impact.edges == []
+    assert risk.verification_required is True
+    assert risk.evidence_status == EvidenceStatus.VERIFY_REQUIRED
+    assert all(test.verification_required for test in recommendations)

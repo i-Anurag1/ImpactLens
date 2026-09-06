@@ -19,7 +19,7 @@ import json
 from typing import List
 
 from .config import settings
-from .schemas import RiskResult, TestRecommendation, GraphQueryResult, AIExplanation
+from .schemas import EvidenceStatus, RiskResult, TestRecommendation, GraphQueryResult, AIExplanation
 
 SYSTEM_PROMPT = (
     "You are an engineering-risk explainer. You will be given structured "
@@ -54,10 +54,15 @@ def _explain_with_template(risk, tests, impact_result, changed_symbols) -> AIExp
             f"{len(hidden)} of the recommended tests exist only to cover a "
             f"dependency that isn't visible in the diff itself — run those first."
         )
-    summary_parts.append(
-        f"Entire Graph's confidence in this blast radius is {impact_result.confidence:.0%}; "
-        f"treat the graph as a strong lead, not a guarantee."
-    )
+    if impact_result.evidence_status == EvidenceStatus.CONFIRMED:
+        summary_parts.append(
+            f"The graph evidence is confirmed at {impact_result.confidence:.0%} confidence."
+        )
+    else:
+        summary_parts.append(
+            f"Graph evidence is {impact_result.evidence_status.value} at {impact_result.confidence:.0%} confidence. "
+            "Possible edges inform prioritization only; they are not confirmed runtime behavior."
+        )
 
     failure_modes = []
     for f in sorted(risk.factors, key=lambda x: x.contribution, reverse=True)[:3]:
@@ -74,6 +79,8 @@ def _explain_with_template(risk, tests, impact_result, changed_symbols) -> AIExp
             "Specifically verify the hidden-dependency path called out above — "
             "it will not show up in a normal code review diff."
         )
+    if impact_result.evidence_status != EvidenceStatus.CONFIRMED:
+        checklist.extend(impact_result.verification_steps)
     if risk.level.value in ("HIGH", "CRITICAL"):
         checklist.append("Request a second reviewer given the risk level.")
 
@@ -86,7 +93,7 @@ def _explain_with_template(risk, tests, impact_result, changed_symbols) -> AIExp
         likely_failure_modes=failure_modes or ["No significant risk factors detected."],
         review_checklist=checklist,
         test_justifications=justifications,
-        generated_by="template-engine (mock, deterministic)",
+        generated_by="local deterministic explanation fallback",
     )
 
 

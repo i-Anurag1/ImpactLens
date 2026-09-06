@@ -5,12 +5,12 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ..db import get_db, Analysis, User, AuditLog, gen_id
-from ..auth import get_current_user
+from ..db import get_db, Analysis, User, Membership, AuditLog, gen_id
+from ..auth import get_current_user, require_role
 from .. import entire_adapter, risk_engine, ranker, ai_explain, databricks_adapter as dbx
 from .. import demo_data as D
 from ..schemas import (
-    ChangedFile, AnalysisResult, HistoricalFailure,
+    ChangedFile, EvidenceStatus, AnalysisResult, HistoricalFailure,
 )
 from .repos import _authorized_repo
 
@@ -39,6 +39,7 @@ def analyze_change(
     repo_id: str,
     ref_label: str = "PR: Fix currency rounding in processPayment",
     user: User = Depends(get_current_user),
+    membership: Membership = Depends(require_role("developer", "admin")),
     db: Session = Depends(get_db),
 ):
     _check_rate_limit(user.id)
@@ -108,23 +109,42 @@ def _run_pipeline(repo_full_name: str, ref_label: str, base_sha: str, head_sha: 
     changed_files = [ChangedFile(**cf) for cf in D.CHANGED_FILES]
     changed_symbols = [s for cf in changed_files for s in cf.changed_symbols]
 
-    diff_result = entire_adapter.diff(base_sha, head_sha)
+    is_demo = repo_full_name == D.REPO_FULL_NAME
+    diff_result = entire_adapter.diff(base_sha, head_sha, use_demo_fixture=is_demo)
 
     # Union impact across every changed symbol into one graph query result
-    impact_nodes, impact_edges, confidences = {}, [], []
+    impact_nodes, impact_edges, confidences, impact_results = {}, [], [], []
     for sym in changed_symbols:
-        r = entire_adapter.impact(sym)
+        r = entire_adapter.impact(sym, use_demo_fixture=is_demo)
         for n in r.nodes:
             impact_nodes[n.symbol] = n
         impact_edges.extend(r.edges)
         confidences.append(r.confidence)
+        impact_results.append(r)
     from ..schemas import GraphQueryResult
+    has_unavailable = any(r.evidence_status == EvidenceStatus.VERIFY_REQUIRED for r in impact_results)
+    has_partial = any(r.evidence_status == EvidenceStatus.PARTIAL for r in impact_results)
+    evidence_status = (
+        EvidenceStatus.VERIFY_REQUIRED if has_unavailable
+        else EvidenceStatus.PARTIAL if has_partial
+        else EvidenceStatus.CONFIRMED
+    )
+    limitations = list(dict.fromkeys(
+        limitation for result in impact_results for limitation in result.limitations
+    ))
+    verification_steps = list(dict.fromkeys(
+        step for result in impact_results for step in result.verification_steps
+    ))
     impact_result = GraphQueryResult(
         query_type="impact", query=",".join(changed_symbols),
         nodes=list(impact_nodes.values()), edges=impact_edges,
         confidence=round(sum(confidences) / len(confidences), 2) if confidences else 0.5,
-        heuristic=True, source="entire-graph (mock adapter)",
-        limitations=entire_adapter.LIMITATIONS_STATIC,
+        heuristic=any(result.heuristic for result in impact_results),
+        source="; ".join(sorted({result.source for result in impact_results})),
+        limitations=limitations,
+        evidence_status=evidence_status,
+        is_complete=bool(impact_results) and all(result.is_complete for result in impact_results),
+        verification_steps=verification_steps,
     )
 
     risk = risk_engine.compute_risk(changed_files, impact_result)
@@ -151,9 +171,13 @@ def _run_pipeline(repo_full_name: str, ref_label: str, base_sha: str, head_sha: 
         ai_explanation=explanation,
         provenance={
             "entire_graph_source": impact_result.source,
-            "entire_graph_heuristic": impact_result.heuristic,
-            "databricks_note": dbx.seed_disclaimer(),
+            "entire_graph_status": impact_result.evidence_status.value,
+            "entire_graph_complete": impact_result.is_complete,
+            "databricks_source": dbx.evidence_metadata()["source"],
+            "databricks_note": dbx.evidence_metadata()["reason"],
             "risk_engine": "deterministic, see risk_engine.py",
             "ai_layer": explanation.generated_by,
+            "checkpoint_status": entire_adapter.checkpoint_status()["note"],
         },
+        verification_plan=impact_result.verification_steps,
     )

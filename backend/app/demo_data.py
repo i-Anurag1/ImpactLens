@@ -105,6 +105,16 @@ CALL_EDGES = [
      "Not visible from the PR diff; surfaced only via static call-graph traversal."),
 ]
 
+# Curveball fixture: this relationship cannot be resolved by static analysis.
+# It is deliberately not inserted into CALL_EDGES, because doing so would turn
+# an unknown dynamic dispatch into a fabricated graph edge.
+INCOMPLETE_ANALYSIS_FIXTURE = {
+    "changed_symbol": "PaymentService.processPayment",
+    "unresolved_expression": "pricing_provider.for_currency(currency).round(amount)",
+    "reason": "Runtime provider selection/dynamic dispatch prevents a resolved callee.",
+    "verification": "Inspect provider registrations and run currency-rounding integration tests.",
+}
+
 # co-change: files that historically change together (from git history / Databricks)
 CO_CHANGE_EDGES = [
     ("src/services/payment_service.py", "src/services/inventory_service.py", 0.42,

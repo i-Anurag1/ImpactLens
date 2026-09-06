@@ -40,6 +40,7 @@ class Settings:
         "GITHUB_OAUTH_REDIRECT_URI", "http://localhost:8000/api/auth/github/callback"
     )
     GITHUB_OAUTH_SCOPES = "read:user repo"
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
 
     # --- Entire CLI / Entire Graph ---
     # In real mode the adapter shells out to the `entire` binary, e.g.
@@ -67,6 +68,7 @@ class Settings:
     # --- Misc ---
     RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+
 
 
 settings = Settings()

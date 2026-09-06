@@ -55,12 +55,12 @@ class Repository(Base):
 
 
 class Membership(Base):
-    """Role-based access: owner / member / reviewer, scoped per repository."""
+    """Role-based access: viewer / developer / admin, scoped per repository."""
     __tablename__ = "memberships"
     id = Column(String, primary_key=True, default=gen_id)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     repository_id = Column(String, ForeignKey("repositories.id"), nullable=False)
-    role = Column(String, nullable=False, default="member")  # owner|member|reviewer
+    role = Column(String, nullable=False, default="viewer")  # viewer|developer|admin
 
     user = relationship("User", back_populates="memberships")
     repository = relationship("Repository", back_populates="memberships")
@@ -96,6 +96,15 @@ class AuditLog(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Existing demo databases used the pre-buildathon vocabulary.  Migrate it
+    # in-place so authorization is always evaluated against the public model.
+    with engine.begin() as conn:
+        for legacy, role in {"owner": "admin", "member": "developer", "reviewer": "viewer"}.items():
+            conn.execute(
+                Membership.__table__.update()
+                .where(Membership.role == legacy)
+                .values(role=role)
+            )
 
 
 def get_db():

@@ -8,7 +8,7 @@ from typing import List
 
 from . import demo_data as D
 from . import databricks_adapter as db
-from .schemas import GraphQueryResult, EvidenceStep, SymbolRef, TestRecommendation
+from .schemas import EvidenceStatus, GraphQueryResult, EvidenceStep, SymbolRef, TestRecommendation
 
 
 def _symbol_ref(name: str) -> SymbolRef:
@@ -53,9 +53,16 @@ def recommend_tests(impact_result: GraphQueryResult, top_n: int = 4) -> List[Tes
             base_relevance = max(0.3, 1.0 - hop_count * 0.15)
             boost = db.rank_boost_from_history(test_name, symbol)
             relevance = min(1.0, round(base_relevance + boost, 2))
+            if impact_result.evidence_status != EvidenceStatus.CONFIRMED:
+                # Ranking stays useful, but partial graph evidence must never
+                # masquerade as a fully certain recommendation.
+                relevance = min(relevance, 0.85)
             fail_rate = db.get_test_failure_rate(symbol).get(test_name)
 
-            reason = _build_reason(symbol, test_name, is_hidden, fail_rate, hop_count)
+            reason = _build_reason(
+                symbol, test_name, is_hidden, fail_rate, hop_count,
+                impact_result.evidence_status,
+            )
 
             candidates.append(TestRecommendation(
                 test_name=test_name, file=meta["file"], line=meta["line"],
@@ -65,6 +72,10 @@ def recommend_tests(impact_result: GraphQueryResult, top_n: int = 4) -> List[Tes
                 evidence_chain=_chain_to(symbol, impact_result),
                 historical_failure_rate=fail_rate,
                 is_hidden_dependency=is_hidden,
+                affected_symbol=symbol,
+                evidence_source=impact_result.source,
+                evidence_status=impact_result.evidence_status,
+                verification_required=impact_result.evidence_status != EvidenceStatus.CONFIRMED,
             ))
 
     # de-dupe by test_name keeping the highest-relevance instance
@@ -79,7 +90,7 @@ def recommend_tests(impact_result: GraphQueryResult, top_n: int = 4) -> List[Tes
     return ranked
 
 
-def _build_reason(symbol, test_name, is_hidden, fail_rate, hop_count) -> str:
+def _build_reason(symbol, test_name, is_hidden, fail_rate, hop_count, evidence_status) -> str:
     parts = []
     if hop_count == 0:
         parts.append(f"Directly covers the changed symbol {symbol}.")
@@ -90,4 +101,6 @@ def _build_reason(symbol, test_name, is_hidden, fail_rate, hop_count) -> str:
                       "easy to miss without graph evidence.")
     if fail_rate:
         parts.append(f"Historically failed {fail_rate:.0%} of the time for this symbol.")
+    if evidence_status != EvidenceStatus.CONFIRMED:
+        parts.append("Graph evidence is partial; inspect the chain and verify this test against runtime behavior.")
     return " ".join(parts)

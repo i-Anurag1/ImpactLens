@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, setToken } from "./lib/api";
 
@@ -7,6 +7,20 @@ export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [oauthConfigured, setOauthConfigured] = useState(false);
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const token = query.get("oauth_token");
+    const oauthError = query.get("oauth_error");
+    if (token) {
+      setToken(token);
+      router.replace("/dashboard");
+      return;
+    }
+    if (oauthError) setError("GitHub sign-in was cancelled or rejected.");
+    api.authStatus().then((status) => setOauthConfigured(status.github_oauth_configured)).catch(() => {});
+  }, [router]);
 
   async function handleDemoLogin() {
     setLoading(true);
@@ -20,6 +34,10 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleGithubLogin() {
+    window.location.assign(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/auth/github/login`);
   }
 
   return (
@@ -40,17 +58,25 @@ export default function LoginPage() {
           </p>
 
           <div className="mt-8 flex flex-col gap-3 max-w-xs">
+            {oauthConfigured && (
+              <button
+                onClick={handleGithubLogin}
+                className="bg-signal-indigo hover:bg-signal-indigo/90 text-white font-medium px-5 py-3 rounded-sm transition-colors flex items-center justify-center gap-2"
+              >
+                Continue with GitHub
+              </button>
+            )}
             <button
               onClick={handleDemoLogin}
               disabled={loading}
-              className="bg-signal-indigo hover:bg-signal-indigo/90 disabled:opacity-60 text-white font-medium px-5 py-3 rounded-sm transition-colors flex items-center justify-center gap-2"
+              className="border border-ink-600 hover:bg-ink-800 disabled:opacity-60 text-mist-100 font-medium px-5 py-3 rounded-sm transition-colors flex items-center justify-center gap-2"
             >
-              {loading ? "Signing in…" : "Sign in with GitHub (demo)"}
+              {loading ? "Starting local demo…" : oauthConfigured ? "Use local demo instead" : "Continue in local demo"}
             </button>
             <p className="text-mist-500 text-xs leading-relaxed">
-              This build uses a fixed demo GitHub identity and a bundled demo repository so
-              the full flow works with zero setup. Real GitHub OAuth wires in via
-              GITHUB_CLIENT_ID/SECRET — see the README.
+              {oauthConfigured
+                ? "GitHub OAuth is configured. Local demo uses a fixed identity and bundled evidence fixtures."
+                : "GitHub OAuth is not configured in this environment. Local demo uses a fixed identity and bundled evidence fixtures."}
             </p>
           </div>
 

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   api, clearToken, ApiError,
-  RepoSummary, AnalysisResult,
+  RepoSummary, AnalysisResult, EvidenceStatus,
 } from "../lib/api";
 import RiskBadge from "../components/RiskBadge";
 import DependencyGraph from "../components/DependencyGraph";
@@ -35,6 +35,7 @@ export default function Dashboard() {
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [user, setUser] = useState<any>(null);
+  const canAnalyze = repo?.role === "developer" || repo?.role === "admin";
 
   useEffect(() => {
     (async () => {
@@ -102,7 +103,7 @@ export default function Dashboard() {
           ))}
         </nav>
         <div className="px-5 py-4 border-t border-ink-700 text-xs text-mist-500 flex items-center justify-between">
-          <span>{user?.display_name}</span>
+          <span>{user?.display_name} {repo && <span className="ml-1 text-signal-indigo uppercase">· {repo.role}</span>}</span>
           <button onClick={signOut} className="hover:text-mist-100">Sign out</button>
         </div>
       </aside>
@@ -115,12 +116,13 @@ export default function Dashboard() {
           />
         )}
 
-        {repo && tab === "overview" && <OverviewTab overview={overview} onAnalyze={runAnalysis} analyzing={analyzing} error={error} />}
-        {repo && tab === "analysis" && <AnalysisTab overview={overview} analysis={analysis} onAnalyze={runAnalysis} analyzing={analyzing} error={error} />}
+        {repo && tab === "overview" && <OverviewTab overview={overview} onAnalyze={runAnalysis} analyzing={analyzing} error={error} canAnalyze={canAnalyze} />}
+        {repo && tab === "analysis" && <AnalysisTab overview={overview} analysis={analysis} onAnalyze={runAnalysis} analyzing={analyzing} error={error} canAnalyze={canAnalyze} />}
         {repo && tab === "graph" && (
           analysis ? (
             <div className="rise-in">
               <SectionHeader title="Dependency Graph" sub="Click any node to see its file:line evidence and relationships." />
+              <EvidenceBanner status={analysis.risk.evidence_status} steps={analysis.verification_plan} />
               <DependencyGraph
                 impact={analysis.graph_queries.find((g) => g.query_type === "impact")!}
                 changedSymbols={analysis.changed_files.flatMap((f) => f.changed_symbols)}
@@ -171,14 +173,28 @@ function CenterMessage({ text }: { text: string }) {
   return <div className="min-h-screen flex items-center justify-center text-mist-500">{text}</div>;
 }
 
+function EvidenceBanner({ status, steps = [] }: { status: EvidenceStatus; steps?: string[] }) {
+  if (status === "CONFIRMED") {
+    return <div className="mb-5 border border-signal-low/40 bg-risk-LOW rounded-sm p-3 text-sm text-mist-300"><span className="text-signal-low font-medium">CONFIRMED</span> structural evidence.</div>;
+  }
+  return (
+    <div className="mb-5 border border-signal-high/50 bg-risk-HIGH rounded-sm p-4">
+      <p className="text-signal-high text-sm font-medium">{status} — graph evidence is not a runtime guarantee</p>
+      <p className="text-mist-300 text-xs mt-1">Recommendations use the available evidence as a lead. Inspect source, callers/callees, tests, and runtime behavior before merging.</p>
+      {steps.length > 0 && <ul className="mt-2 list-disc list-inside text-xs text-mist-300 space-y-1">{steps.map((step) => <li key={step}>{step}</li>)}</ul>}
+    </div>
+  );
+}
+
 // ---- Overview ---------------------------------------------------------------
 function OverviewTab({
-  overview, onAnalyze, analyzing, error,
+  overview, onAnalyze, analyzing, error, canAnalyze,
 }: {
   overview: any;
   onAnalyze: () => void;
   analyzing: boolean;
   error: string | null;
+  canAnalyze: boolean;
 }) {
   if (!overview) return <CenterMessage text="Loading repository…" />;
   return (
@@ -199,10 +215,10 @@ function OverviewTab({
           </p>
           <button
             onClick={onAnalyze}
-            disabled={analyzing}
+            disabled={analyzing || !canAnalyze}
             className="mt-4 bg-signal-indigo hover:bg-signal-indigo/90 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded-sm"
           >
-            {analyzing ? "Analyzing…" : "Analyze this change"}
+            {analyzing ? "Analyzing…" : canAnalyze ? "Analyze this change" : "Viewer role cannot run analysis"}
           </button>
           {error && <p className="risk-CRITICAL text-xs mt-2">{error}</p>}
         </div>
@@ -222,13 +238,14 @@ function Stat({ label, value }: { label: string; value: any }) {
 
 // ---- Change Analysis ---------------------------------------------------------
 function AnalysisTab({
-  overview, analysis, onAnalyze, analyzing, error,
+  overview, analysis, onAnalyze, analyzing, error, canAnalyze,
 }: {
   overview: any;
   analysis: AnalysisResult | null;
   onAnalyze: () => void;
   analyzing: boolean;
   error: string | null;
+  canAnalyze: boolean;
 }) {
   return (
     <div className="rise-in">
@@ -239,10 +256,10 @@ function AnalysisTab({
           <p className="text-mist-500 text-xs mt-1">{overview.demo_commit.base_sha} → {overview.demo_commit.head_sha}</p>
           <button
             onClick={onAnalyze}
-            disabled={analyzing}
+            disabled={analyzing || !canAnalyze}
             className="mt-3 bg-signal-indigo hover:bg-signal-indigo/90 disabled:opacity-60 text-white text-sm font-medium px-4 py-2 rounded-sm"
           >
-            {analyzing ? "Analyzing…" : analysis ? "Analyze again" : "Analyze this change"}
+            {analyzing ? "Analyzing…" : canAnalyze ? analysis ? "Analyze again" : "Analyze this change" : "Viewer role cannot run analysis"}
           </button>
           {error && <p className="risk-CRITICAL text-xs mt-2">{error}</p>}
         </div>
@@ -277,6 +294,7 @@ function RiskTab({ analysis }: { analysis: AnalysisResult }) {
   return (
     <div className="rise-in">
       <SectionHeader title="Risk Report" />
+      <EvidenceBanner status={analysis.risk.evidence_status} steps={analysis.verification_plan} />
       <div className="mb-6"><RiskBadge level={analysis.risk.level} score={analysis.risk.score} /></div>
       <div className="space-y-3 mb-6">
         {analysis.risk.factors.map((f) => (
@@ -305,6 +323,7 @@ function TestsTab({ analysis }: { analysis: AnalysisResult }) {
   return (
     <div className="rise-in">
       <SectionHeader title="Test Recommendations" sub={`${analysis.test_recommendations.length} highest-value tests, ranked — not the full suite.`} />
+      <EvidenceBanner status={analysis.risk.evidence_status} steps={analysis.verification_plan} />
       <div className="space-y-3">
         {analysis.test_recommendations.map((t) => (
           <div key={t.test_name} className="bg-ink-800 border border-ink-600 rounded-sm p-4">
@@ -319,6 +338,11 @@ function TestsTab({ analysis }: { analysis: AnalysisResult }) {
               <span className="text-mist-500 text-xs font-mono">{Math.round(t.relevance_score * 100)}% relevant</span>
             </div>
             <div className="evidence-line text-mist-500 mt-1">{t.file}:{t.line}</div>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+              <span className="border border-ink-600 rounded-sm px-1.5 py-0.5 text-mist-300">affected: {t.affected_symbol}</span>
+              <span className="border border-ink-600 rounded-sm px-1.5 py-0.5 text-mist-300">history: {t.historical_failure_rate === null ? "none" : `${Math.round(t.historical_failure_rate * 100)}% failure rate`}</span>
+              <span className="border border-ink-600 rounded-sm px-1.5 py-0.5 text-mist-300">{t.evidence_status}</span>
+            </div>
             <p className="text-mist-300 text-sm mt-2">{t.reason}</p>
             <details className="mt-2">
               <summary className="text-xs text-signal-indigo cursor-pointer">Evidence chain</summary>
@@ -330,6 +354,7 @@ function TestsTab({ analysis }: { analysis: AnalysisResult }) {
                 ))}
               </ol>
             </details>
+            <p className="text-mist-500 text-[11px] mt-2">Evidence: {t.evidence_source}</p>
           </div>
         ))}
       </div>
@@ -341,7 +366,7 @@ function TestsTab({ analysis }: { analysis: AnalysisResult }) {
 function HistoryTab({ analysis }: { analysis: AnalysisResult }) {
   return (
     <div className="rise-in">
-      <SectionHeader title="Historical Evidence" sub="Seeded demo history — clearly labeled, not real production data." />
+      <SectionHeader title="Historical Evidence" sub={String(analysis.provenance.databricks_note || "Historical evidence source unavailable.")} />
       <div className="space-y-2">
         {analysis.historical_failures.length === 0 && (
           <p className="text-mist-500 text-sm">No historical runs recorded for the impacted symbols.</p>
@@ -350,7 +375,7 @@ function HistoryTab({ analysis }: { analysis: AnalysisResult }) {
           <div key={i} className="bg-ink-800 border border-ink-600 rounded-sm p-3 flex justify-between items-center">
             <div>
               <div className="font-mono text-sm text-mist-100">{h.test_name}</div>
-              <div className="text-mist-500 text-xs mt-1">{h.symbol} · {h.commit_sha} · {new Date(h.occurred_at).toLocaleDateString()}</div>
+              <div className="text-mist-500 text-xs mt-1">{h.symbol} · {h.commit_sha} · {h.occurred_at ? new Date(h.occurred_at).toLocaleDateString() : "time unavailable"}</div>
               {h.failure_message && <div className="text-mist-500 text-xs mt-1 italic">{h.failure_message}</div>}
             </div>
             <span className={`text-xs px-2 py-1 rounded-sm border ${h.outcome === "fail" ? "risk-CRITICAL bg-risk-CRITICAL" : "risk-LOW bg-risk-LOW"}`}>
@@ -401,6 +426,10 @@ function CheckpointsTab({ repoId }: { repoId: string }) {
 
   if (error) return <ErrorState message={error} />;
   if (!checkpoints) return <CenterMessage text="Loading checkpoints…" />;
+
+  if (checkpoints.length === 0) {
+    return <EmptyState title="No verified Entire checkpoints available" body="This environment cannot retrieve valid Entire checkpoint/session records. No checkpoint IDs are shown or inferred." />;
+  }
 
   return (
     <div className="rise-in">

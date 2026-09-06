@@ -11,7 +11,7 @@ from typing import List
 from . import demo_data as D
 from . import databricks_adapter as db
 from .schemas import (
-    ChangedFile, GraphQueryResult, RiskFactor, RiskResult, RiskLevel,
+    ChangedFile, EvidenceStatus, GraphQueryResult, RiskFactor, RiskResult, RiskLevel,
 )
 
 # Weights sum to 100 -> score is directly in points out of 100.
@@ -55,6 +55,8 @@ def compute_risk(
         f"{total_lines} lines changed across {len(changed_files)} file(s).",
     ))
 
+    partial = impact_result.evidence_status != EvidenceStatus.CONFIRMED or not impact_result.is_complete
+
     # 2. Dependency depth: longest hop distance from any changed symbol to
     # anything else reachable in the traced graph (BFS over the union of
     # edges), which is what actually catches multi-hop hidden dependencies
@@ -63,18 +65,23 @@ def compute_risk(
     depth_norm = min(1.0, max_depth / 3)
     factors.append(_factor(
         "dependency_depth", "Dependency depth", depth_norm, WEIGHTS["dependency_depth"],
-        f"Deepest traced call chain from a changed symbol spans {max_depth} edge(s), "
+        f"{'Possible' if partial else 'Confirmed'} deepest traced call chain from a changed symbol spans {max_depth} edge(s), "
         f"including at least one indirect (multi-hop) dependency."
         if max_depth >= 3 else f"Call chain depth: {max_depth} edge(s).",
     ))
 
     # 3. Consumer count: distinct callers/consumers touched, direct + hidden
     consumers = {e.source.symbol for e in impact_result.edges if e.source.symbol not in changed_symbols}
+    confirmed_consumers = {
+        e.source.symbol for e in impact_result.edges
+        if e.source.symbol not in changed_symbols and e.confidence >= 0.85
+    }
     consumer_norm = min(1.0, len(consumers) / 4)
     factors.append(_factor(
         "consumer_count", "Affected consumers", consumer_norm, WEIGHTS["consumer_count"],
-        f"{len(consumers)} distinct consumer(s) reach the changed code, "
-        f"including services not touched by this diff.",
+        f"{len(confirmed_consumers)} confirmed and {len(consumers) - len(confirmed_consumers)} "
+        f"partial/potential consumer(s) reach the changed code. "
+        f"Potential consumers increase caution but require verification.",
     ))
 
     # 4. Public API exposure
@@ -104,8 +111,8 @@ def compute_risk(
     factors.append(_factor(
         "historical_failure_rate", "Historical failure rate", avg_fail_rate,
         WEIGHTS["historical_failure_rate"],
-        f"Average historical failure rate across impacted symbols: {avg_fail_rate:.0%} "
-        f"(seeded demo history).",
+        f"Average historical failure rate across impacted symbols: {avg_fail_rate:.0%}. "
+        f"Source: {db.seed_disclaimer()}",
     ))
 
     # 7. Graph confidence penalty: lower confidence => added uncertainty risk
@@ -113,8 +120,9 @@ def compute_risk(
     factors.append(_factor(
         "graph_confidence_penalty", "Graph uncertainty", conf_penalty_norm,
         WEIGHTS["graph_confidence_penalty"],
-        f"Entire Graph confidence for this impact query: {impact_result.confidence:.0%}. "
-        f"Lower confidence adds a small uncertainty margin to the score.",
+        f"Graph confidence for this impact query: {impact_result.confidence:.0%}. "
+        f"Status: {impact_result.evidence_status.value}. Lower confidence adds an uncertainty margin, "
+        f"not a claim of confirmed impact.",
     ))
 
     score = round(sum(f.contribution for f in factors))
@@ -126,6 +134,8 @@ def compute_risk(
     return RiskResult(
         score=score, level=level, factors=factors, rationale=rationale,
         graph_confidence=impact_result.confidence,
+        evidence_status=(EvidenceStatus.VERIFY_REQUIRED if impact_result.evidence_status == EvidenceStatus.VERIFY_REQUIRED else (EvidenceStatus.PARTIAL if partial else EvidenceStatus.CONFIRMED)),
+        verification_required=partial,
     )
 
 

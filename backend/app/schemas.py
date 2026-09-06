@@ -17,6 +17,13 @@ class RiskLevel(str, Enum):
     CRITICAL = "CRITICAL"
 
 
+class EvidenceStatus(str, Enum):
+    """How safely the system can rely on an evidence set."""
+    CONFIRMED = "CONFIRMED"
+    PARTIAL = "PARTIAL"
+    VERIFY_REQUIRED = "VERIFY REQUIRED"
+
+
 class SymbolRef(BaseModel):
     """A precise, evidence-grade pointer into the codebase."""
     symbol: str
@@ -48,6 +55,9 @@ class GraphQueryResult(BaseModel):
     heuristic: bool = True
     source: str = "entire-graph"
     limitations: List[str] = []
+    evidence_status: EvidenceStatus = EvidenceStatus.PARTIAL
+    is_complete: bool = False
+    verification_steps: List[str] = []
 
 
 class ChangedFile(BaseModel):
@@ -72,6 +82,8 @@ class RiskResult(BaseModel):
     factors: List[RiskFactor]
     rationale: List[str]
     graph_confidence: float
+    evidence_status: EvidenceStatus = EvidenceStatus.PARTIAL
+    verification_required: bool = True
 
 
 class EvidenceStep(BaseModel):
@@ -91,6 +103,10 @@ class TestRecommendation(BaseModel):
     evidence_chain: List[EvidenceStep]
     historical_failure_rate: Optional[float] = None
     is_hidden_dependency: bool = False
+    affected_symbol: str = ""
+    evidence_source: str = ""
+    evidence_status: EvidenceStatus = EvidenceStatus.PARTIAL
+    verification_required: bool = True
 
 
 class HistoricalFailure(BaseModel):
@@ -143,3 +159,4 @@ class AnalysisResult(BaseModel):
     checkpoints: List[Checkpoint]
     ai_explanation: AIExplanation
     provenance: dict
+    verification_plan: List[str] = []

@@ -46,6 +46,7 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 
 // ---- Types (mirror backend/app/schemas.py) --------------------------------
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type EvidenceStatus = "CONFIRMED" | "PARTIAL" | "VERIFY REQUIRED";
 
 export interface SymbolRef {
   symbol: string;
@@ -71,6 +72,9 @@ export interface GraphQueryResult {
   heuristic: boolean;
   source: string;
   limitations: string[];
+  evidence_status: EvidenceStatus;
+  is_complete: boolean;
+  verification_steps: string[];
 }
 
 export interface ChangedFile {
@@ -95,6 +99,8 @@ export interface RiskResult {
   factors: RiskFactor[];
   rationale: string[];
   graph_confidence: number;
+  evidence_status: EvidenceStatus;
+  verification_required: boolean;
 }
 
 export interface EvidenceStep {
@@ -112,6 +118,10 @@ export interface TestRecommendation {
   evidence_chain: EvidenceStep[];
   historical_failure_rate: number | null;
   is_hidden_dependency: boolean;
+  affected_symbol: string;
+  evidence_source: string;
+  evidence_status: EvidenceStatus;
+  verification_required: boolean;
 }
 
 export interface HistoricalFailure {
@@ -160,6 +170,7 @@ export interface AnalysisResult {
   checkpoints: Checkpoint[];
   ai_explanation: AIExplanation;
   provenance: Record<string, string | boolean>;
+  verification_plan: string[];
 }
 
 export interface RepoSummary {
@@ -172,6 +183,7 @@ export interface RepoSummary {
 
 // ---- API calls -------------------------------------------------------------
 export const api = {
+  authStatus: () => request<{ github_oauth_configured: boolean; local_demo_available: boolean }>("/api/auth/status"),
   demoLogin: () => request<{ token: string; user: any; demo_mode: boolean }>("/api/auth/demo-login", { method: "POST" }),
   me: () => request<any>("/api/auth/me"),
   listRepos: () => request<RepoSummary[]>("/api/repos"),
