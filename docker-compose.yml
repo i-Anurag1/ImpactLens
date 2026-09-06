@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: impactlens
+      POSTGRES_PASSWORD: impactlens
+      POSTGRES_DB: impactlens
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Swap to Postgres by uncommenting the next line (and removing the
+      # sqlite default in config.py isn't needed — env var wins):
+      # DATABASE_URL: postgresql+psycopg2://impactlens:impactlens@postgres:5432/impactlens
+      DEMO_MODE: "true"
+      CORS_ORIGINS: "http://localhost:3000"
+    depends_on:
+      - postgres
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:8000"
+    depends_on:
+      - backend
+
+volumes:
+  pg_data:

@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0b0f17;
+  color: #e8ecf3;
+  font-family: Inter, sans-serif;
+}
+
+::selection {
+  background: #6c7bff55;
+}
+
+.evidence-line {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.8rem;
+}
+
+.risk-LOW { color: #3fbf7f; border-color: #3fbf7f55; }
+.risk-MEDIUM { color: #e8a93b; border-color: #e8a93b55; }
+.risk-HIGH { color: #e8763b; border-color: #e8763b55; }
+.risk-CRITICAL { color: #e8475b; border-color: #e8475b55; }
+
+.bg-risk-LOW { background-color: #3fbf7f22; }
+.bg-risk-MEDIUM { background-color: #e8a93b22; }
+.bg-risk-HIGH { background-color: #e8763b22; }
+.bg-risk-CRITICAL { background-color: #e8475b22; }
+
+/* single deliberate load-in for the dashboard shell only */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.rise-in { animation: riseIn 0.35s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rise-in { animation: none; }
+}
